@@ -1,21 +1,23 @@
 #[macro_use]
 extern crate rocket;
 
-use crate::packet::{make_server_packet, make_upacket, SPacket};
-use identity::{make_user_id};
+use crate::packet::{SPacket, make_server_packet, make_upacket};
+use identity::make_user_id;
+use log::{error, info, warn};
 use packet::UPacket;
 use rocket::futures::channel::mpsc::UnboundedReceiver;
 use rocket::futures::{SinkExt, StreamExt};
+use rocket::response::status;
 use rocket::tokio::select;
-use rocket::{tokio, State};
+use rocket::{State, tokio};
 use rocket_ws::stream::DuplexStream;
-use rocket_ws::{Channel, WebSocket};
-use std::sync::mpsc::{Sender};
-use std::sync::{mpsc, Arc, Mutex};
+use rocket_ws::{Channel, Message, WebSocket};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex, mpsc};
 
+mod identity;
 pub mod message_server;
 pub mod packet;
-mod identity;
 
 type MessageServer = State<Arc<Mutex<message_server::MessageServer<SPacket>>>>;
 
@@ -28,30 +30,48 @@ fn index() -> &'static str {
 }
 
 #[get("/updates/<uid>")]
-fn updates<'r>(server: &MessageServer, server_sender: &State<ServerSender>, ws: WebSocket, uid: String) -> Channel<'r> {
+fn updates<'r>(
+    server: &'r MessageServer,
+    server_sender: &State<ServerSender>,
+    ws: WebSocket,
+    uid: &'r str,
+) -> Result<Channel<'r>, status::Forbidden<&'static str>> {
+    let server2 = server;
     let mut server = server.lock().unwrap();
-    let rx = server.register(make_user_id(uid.clone())).unwrap();
+    let rx = server
+        .register(make_user_id(uid.to_string()))
+        .map_err(|_| status::Forbidden("Already registered"))?;
     let tx = server_sender.0.clone();
-    ws.channel(move |stream| Box::pin(handle_socket(tx, rx, stream, uid)))
+    Ok(ws.channel(move |stream| Box::pin(handle_socket(server2, tx, rx, stream, uid.to_string()))))
 }
 
 async fn handle_socket(
+    server: &MessageServer,
     tx: Sender<SPacket>,
     mut rx: UnboundedReceiver<SPacket>,
     channel: DuplexStream,
     uid: String,
 ) -> rocket_ws::result::Result<()> {
     let (mut sender, mut receiver) = channel.split();
-
+    let user_id = make_user_id(uid.clone());
+    info!("Registered {:?}", &user_id);
     // Receiving task (handles incoming messages from the WebSocket)
     let r_uid = uid.clone();
     let receive_task = tokio::spawn(async move {
         let r_uid = make_user_id(r_uid);
         while let Some(Ok(msg)) = receiver.next().await {
             // convert to SPacket
-            match UPacket::try_from(msg) {
-                Ok(upacket) => tx.send(make_server_packet(upacket, r_uid.clone())).unwrap(),
-                Err(e) => panic!("Missed packet because {e:?}"),
+            match msg {
+                Message::Close(_c) => {
+                    info!("Closing connection.");
+                    break;
+                }
+                msg => match UPacket::try_from(msg) {
+                    Ok(upacket) => tx.send(make_server_packet(upacket, r_uid.clone())).unwrap(),
+                    Err(e) => {
+                        error!("Unable to parse upacket: {:?}", e);
+                    }
+                }
             }
         }
     });
@@ -60,6 +80,7 @@ async fn handle_socket(
     let send_task = tokio::spawn(async move {
         while let Some(server_message) = rx.next().await {
             // convert to UPacket
+            info!("Sending along {:?}", &server_message);
             let upacket = make_upacket(server_message);
             sender.send(upacket.try_into().unwrap()).await.unwrap();
         }
@@ -67,9 +88,17 @@ async fn handle_socket(
 
     // Wait for either task to complete
     select! {
-        _ = receive_task => println!("Receiver closed for {}", uid.clone()),
-        _ = send_task => println!("Sender closed for {}", uid),
+        _ = receive_task => info!("Channel closed from receiver end for {}", uid.clone()),
+        _ = send_task => info!("Channel closed from sender end for {}", uid),
     }
+
+    match server.lock() {
+        Ok(mut s) => {
+            s.deregister(&user_id);
+            info!("Deregistered {:?}", &user_id);
+        }
+        Err(_e) => error!("Unable to unlock server to deregister {:?}", &user_id),
+    };
 
     Ok(())
 }

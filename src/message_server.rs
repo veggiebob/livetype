@@ -36,17 +36,16 @@ impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
                 match s.process_message(spacket) {
                     Ok(sent) => {
                         if sent {
-                            println!("Message routed & sent!")
+                            info!("Message routed & sent!")
                         } else {
-                            println!("Message added to backlog.")
+                            info!("Message added to backlog.")
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error occurred while sending message: {e:?}")
+                        error!("Error occurred while sending message: {e:?}")
                     }
                 };
             }
-            panic!("Finished server thread!")
         });
         (tx, server2, ShutdownHandler::new(handle))
     }
@@ -65,13 +64,17 @@ impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
         self.flush_backlog(&uid)?; // send them the messages they missed
         Ok(rx)
     }
+    
+    pub fn deregister(&mut self, uid: &UserId) {
+        self.open_senders.remove(uid);
+    }
 
     fn flush_backlog(&mut self, user_id: &UserId) -> Result<(), ServerError> {
         if let Some(tx) = self.open_senders.get(user_id) {
             if let Some(mut backlog) = self.backlog.remove(user_id) {
                 while let Some(msg) = backlog.pop_front() {
                     match tx.unbounded_send(msg) {
-                        Ok(_) => {}
+                        Ok(_) => {},
                         Err(_e) => return Err(ServerError::TrySendError(user_id.clone())),
                     }
                 }
