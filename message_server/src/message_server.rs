@@ -24,6 +24,12 @@ pub enum ServerError {
 }
 
 impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
+    pub fn new() -> Self {
+        MessageServer {
+            backlog: HashMap::new(),
+            open_senders: HashMap::new(),
+        }
+    }
     pub fn start(/* config? */) -> (Sender<M>, Arc<Mutex<Self>>, ShutdownHandler) {
         let server = Self::new();
         let server = Arc::new(Mutex::new(server));
@@ -48,12 +54,6 @@ impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
             }
         });
         (tx, server2, ShutdownHandler::new(handle))
-    }
-    pub fn new() -> Self {
-        MessageServer {
-            backlog: HashMap::new(),
-            open_senders: HashMap::new(),
-        }
     }
     pub fn register(&mut self, uid: UserId) -> Result<UnboundedReceiver<M>, ServerError> {
         if self.open_senders.contains_key(&uid) {
