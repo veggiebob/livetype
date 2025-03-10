@@ -2,7 +2,6 @@ use crate::identity::UserId;
 use rocket::fairing::{Fairing, Info};
 use rocket::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use rocket::{Orbit, Rocket};
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::panic;
 use std::sync::mpsc::Sender;
@@ -62,37 +61,56 @@ impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
             return Err(ServerError::AlreadyInUse(uid));
         }
         let (tx, rx) = rocket::futures::channel::mpsc::unbounded();
-        self.open_senders.insert(uid, tx);
+        self.open_senders.insert(uid.clone(), tx);
+        self.flush_backlog(&uid)?; // send them the messages they missed
         Ok(rx)
     }
+
+    fn flush_backlog(&mut self, user_id: &UserId) -> Result<(), ServerError> {
+        if let Some(tx) = self.open_senders.get(user_id) {
+            if let Some(mut backlog) = self.backlog.remove(user_id) {
+                while let Some(msg) = backlog.pop_front() {
+                    match tx.unbounded_send(msg) {
+                        Ok(_) => {}
+                        Err(_e) => return Err(ServerError::TrySendError(user_id.clone())),
+                    }
+                }
+                Ok(())
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn process_message(&mut self, msg: M) -> Result<bool, ServerError> {
         // route and re-send it
         let (to, _from) = msg.get_to_from();
-        match self.open_senders.entry(to.clone()) {
-            Entry::Occupied(entry) => {
-                let to2 = to.clone();
-                // first, empty the backlog
-                if let Some(mut backlog) = self.backlog.remove(&to) {
-                    while let Some(msg) = backlog.pop_front() {
-                        match entry.get().unbounded_send(msg) {
-                            Ok(_) => {}
-                            Err(_e) => return Err(ServerError::TrySendError(to2)),
-                        }
+        self.flush_backlog(&to)?; // will only go if sender exists
+        let mut disconnected = false;
+        let msg = if let Some(tx) = self.open_senders.get(&to) {
+            // then, send the message
+            match tx.unbounded_send(msg) {
+                Ok(_) => return Ok(true),
+                Err(e) => {
+                    if e.is_disconnected() {
+                        disconnected = true;
+                        e.into_inner() // retrieve the message
+                    } else {
+                        return Err(ServerError::TrySendError(to))
                     }
                 }
-                // then, send the message
-                match entry.get().unbounded_send(msg) {
-                    Ok(_) => Ok(true),
-                    Err(_e) => Err(ServerError::TrySendError(to2)),
-                }
             }
-            Entry::Vacant(_v) => {
-                // we can't create a connection if one doesn't already exist
-                // so, put it in the backlog
-                self.backlog.entry(to.clone()).or_default().push_back(msg);
-                Ok(false)
-            }
+        } else {
+            msg
+        };
+        self.backlog.entry(to.clone()).or_default().push_back(msg);
+        if disconnected {
+            // if they disconnect, remove the sending channel
+            self.open_senders.remove(&to);
         }
+        Ok(false)
     }
 }
 
@@ -135,7 +153,7 @@ mod test {
     use crate::identity::make_user_id;
     use crate::message_server;
     use crate::packet::SPacket;
-    use rocket::futures::StreamExt;
+    use rocket::futures::{StreamExt};
     use std::sync::{Arc, Mutex};
     use std::thread;
 
@@ -150,8 +168,7 @@ mod test {
         // usually the message server runs on a separate thread,
         // but for this example it was easier to get it set up on the main
         // thread... hopefully this problem is not in the main server
-        
-        
+
         let server: message_server::MessageServer<SPacket> = message_server::MessageServer::new();
         let server = Arc::new(Mutex::new(server));
         let (s_sender, s_receiver) = std::sync::mpsc::channel();
@@ -211,5 +228,12 @@ mod test {
                 message: "howdy".to_string()
             }
         );
+    }
+
+    #[test]
+    fn channel() {
+        let (tx, rx) = rocket::futures::channel::mpsc::unbounded();
+        drop(rx);
+        tx.unbounded_send(3).unwrap();
     }
 }
