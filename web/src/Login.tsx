@@ -1,9 +1,72 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-interface UPacket {
+/*
+// ------------------------- Web Packet Rust Spec -----------------------------
+pub struct WebPacket {
+    content: Packet,
+    destination: WebDest,
+    sender: Option<String>, // only used going toward client
+    timestamp: Option<Timestamp>, // only used going toward client
+}
+enum WebDest {
+    User(String),
+    // Group(Uuid) // sometime later for group chats
+}
+pub enum Packet {
+    ///
+    NewMessage { content: String },
+    // SyncMessage(Uuid, String), // to be used to sync database w/ chats
+    /// A user only has one draft at a time in a conversation - the last thing they typed
+    StartDraft,
+    EndDraft {
+        #[serde(with = "uuid::serde::compact")]
+        uuid: Uuid
+    },
+    Edit {
+        #[serde(with = "uuid::serde::compact")]
+        uuid: Uuid,
+        content: String,
+    },
+}
+*/
+
+type Uuid = string;
+type Timestamp = number;
+
+interface WebPacket {
+  content: Packet,
+  destination: WebDest,
+  sender?: string,
+  timestamp?: Timestamp,
+}
+
+interface WebDest {
+  User: string
+  // Group: Uuid // sometime later for group chats
+}
+
+interface Packet {
+  // all of the variants are optional, but at least one should be present
+  NewMessage?: {
+    content: string
+  },
+  // SyncMessage: Uuid, String // to be used to sync database w/ chats
+  StartDraft?: {},
+  EndDraft?: {
+    uuid: Uuid
+  },
+  Edit?: {
+    uuid: Uuid,
+    content: string
+  }
+}
+
+
+// -------------------- frontend use --------------------
+interface Message {
   sender: string,
+  destination: WebDest,
   message: string,
-  destination: string,
 }
 
 const Login: React.FC = () => {
@@ -11,8 +74,19 @@ const Login: React.FC = () => {
   const [submitted, setSubmitted] = useState(false);
   const [triedLogin, setTriedLogin] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  const [messages, setMessages] = useState<UPacket[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
+
+  const processPacket = (wpacket: WebPacket) => {
+    const packet = wpacket.content;
+    if (packet.NewMessage) {
+      setMessages(prevMessages => [...prevMessages, {
+        sender: wpacket.sender || '<unknown>',
+        destination: wpacket.destination,
+        message: packet.NewMessage?.content || ''
+      }]);
+    }
+  }
 
   const handleLogin = () => {
     if (username) {
@@ -28,8 +102,8 @@ const Login: React.FC = () => {
       console.log(ws)
       wsRef.current = ws;
       ws.onmessage = (event: MessageEvent) => {
-        let message = JSON.parse(event.data);
-        setMessages([...messages, message]);
+        let webpacket = JSON.parse(event.data);
+        processPacket(webpacket);
       }
       ws.onopen = () => {
         setIsConnected(true);
@@ -55,7 +129,7 @@ const Login: React.FC = () => {
 
   
 
-  const showMessage = (message: UPacket) => {
+  const showMessage = (message: Message) => {
     return (
       <div>
         <div>from: {message.sender}</div>
@@ -65,10 +139,11 @@ const Login: React.FC = () => {
   }
 
   const sendMessage = (content: string, to: string) => {
-    const message: UPacket = {
-      sender: username,
-      message: content,
-      destination: to,
+    const message: WebPacket = {
+      destination: { User: to },
+      content: {
+        NewMessage: { content }
+      }
     }
     if (wsRef.current) {
       wsRef.current.send(JSON.stringify(message));

@@ -7,14 +7,11 @@ use std::panic;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
+use crate::packet::{Destination, RoutingInfo};
 
 pub struct MessageServer<M> {
     open_senders: HashMap<UserId, UnboundedSender<M>>,
     backlog: HashMap<UserId, VecDeque<M>>,
-}
-
-pub trait RoutingInfo<U> {
-    fn get_to_from(&self) -> (U, U);
 }
 
 #[derive(Debug)]
@@ -23,7 +20,7 @@ pub enum ServerError {
     TrySendError(UserId),
 }
 
-impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
+impl<M: RoutingInfo + Send + 'static> MessageServer<M> {
     pub fn new() -> Self {
         MessageServer {
             backlog: HashMap::new(),
@@ -64,7 +61,7 @@ impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
         self.flush_backlog(&uid)?; // send them the messages they missed
         Ok(rx)
     }
-    
+
     pub fn deregister(&mut self, uid: &UserId) {
         self.open_senders.remove(uid);
     }
@@ -74,7 +71,7 @@ impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
             if let Some(mut backlog) = self.backlog.remove(user_id) {
                 while let Some(msg) = backlog.pop_front() {
                     match tx.unbounded_send(msg) {
-                        Ok(_) => {},
+                        Ok(_) => {}
                         Err(_e) => return Err(ServerError::TrySendError(user_id.clone())),
                     }
                 }
@@ -90,6 +87,9 @@ impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
     pub fn process_message(&mut self, msg: M) -> Result<bool, ServerError> {
         // route and re-send it
         let (to, _from) = msg.get_to_from();
+        let to = match to {
+            Destination::User(uid) => uid
+        };
         self.flush_backlog(&to)?; // will only go if sender exists
         let mut disconnected = false;
         let msg = if let Some(tx) = self.open_senders.get(&to) {
@@ -101,7 +101,7 @@ impl<M: RoutingInfo<UserId> + Send + 'static> MessageServer<M> {
                         disconnected = true;
                         e.into_inner() // retrieve the message
                     } else {
-                        return Err(ServerError::TrySendError(to))
+                        return Err(ServerError::TrySendError(to));
                     }
                 }
             }
@@ -155,7 +155,7 @@ impl Fairing for ShutdownHandler {
 mod test {
     use crate::identity::make_user_id;
     use crate::message_server;
-    use crate::packet::SPacket;
+    use crate::packet::{Destination, Packet, SPacket};
     use rocket::futures::{StreamExt};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -185,8 +185,9 @@ mod test {
             s_sender
                 .send(SPacket {
                     sender: inner_uid_a.clone(),
-                    message: "howdy".to_string(),
-                    destination: inner_uid_b.clone(),
+                    destination: Destination::User(inner_uid_b.clone()),
+                    time: 0,
+                    packet: Packet::NewMessage { content: "howdy".to_string() },
                 })
                 .unwrap();
 
@@ -197,9 +198,14 @@ mod test {
                 .register(inner_uid_b.clone())
                 .unwrap();
             run(async move {
-                let msg = rx_b.next().await.unwrap();
-                println!("message from {:?}: \"{}\"", &msg.sender, &msg.message);
-                msg
+                let packet = rx_b.next().await.unwrap();
+                match &packet.packet {
+                    Packet::NewMessage { content: msg } => {
+                        println!("message from {:?}: \"{}\"", packet.sender, msg);
+                        msg.clone()
+                    }
+                    _ => panic!("crashout")
+                }
             })
         });
 
@@ -225,11 +231,7 @@ mod test {
         let result = handle.join().unwrap();
         assert_eq!(
             result,
-            SPacket {
-                sender: uid_a.clone(),
-                destination: uid_b.clone(),
-                message: "howdy".to_string()
-            }
+            "howdy".to_string()
         );
     }
 

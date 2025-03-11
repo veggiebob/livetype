@@ -1,7 +1,68 @@
+use std::time::SystemTime;
 use crate::identity::{UserId, make_user_id};
-use crate::message_server::RoutingInfo;
 use rocket_ws::Message;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use uuid;
+
+/// Unix microseconds. See get_current_time()
+type Timestamp = u64;
+
+// ------------------------- Web Packets -----------------------------
+
+/// This is what is sent on the websocket
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub struct WebPacket {
+    content: Packet,
+    destination: WebDest,
+    sender: Option<String>, // only used going toward client
+    timestamp: Option<Timestamp>, // only used going toward client
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+enum WebDest {
+    User(String),
+    // Group(Uuid) // sometime later for group chats
+}
+
+// ----------------------------- Common Usage ----------------------------
+
+/// Packet Message
+#[derive(Deserialize, Serialize, Eq, PartialEq, Debug)]
+pub enum Packet {
+    ///
+    NewMessage { content: String },
+    // SyncMessage(Uuid, String), // to be used to sync database w/ chats
+    /// A user only has one draft at a time in a conversation - the last thing they typed
+    StartDraft,
+    EndDraft {
+        #[serde(with = "uuid::serde::compact")]
+        uuid: Uuid
+    },
+    Edit {
+        #[serde(with = "uuid::serde::compact")]
+        uuid: Uuid,
+        content: String,
+    },
+}
+
+// ----------------------- Server Packets -------------------------
+
+/// Correctly annotated & authenticated packet
+#[derive(PartialEq, Eq, Debug)]
+pub struct SPacket {
+    pub sender: UserId,
+    pub destination: Destination,
+    pub time: Timestamp,
+    pub packet: Packet,
+}
+
+/// Determines how to route server packet
+#[derive(PartialEq, Eq, Debug, Clone)]
+pub enum Destination {
+    User(UserId),
+    // Group(...?) // future use
+}
 
 #[derive(Debug)]
 pub enum PacketError {
@@ -9,67 +70,67 @@ pub enum PacketError {
     WrongType(Message),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct UPacket {
-    sender: String,
-    message: String,
-    destination: String,
+pub fn get_current_time() -> Timestamp {
+    let now = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("Time went backwards");
+    now.as_micros() as Timestamp
 }
 
-#[derive(PartialEq, Eq, Debug)]
-pub struct SPacket {
-    pub sender: UserId,
-    pub message: String,
-    pub destination: UserId,
+pub fn make_uuid() -> Uuid {
+    Uuid::new_v4()
 }
 
-pub fn make_server_packet(upacket: UPacket, sender: UserId) -> SPacket {
-    let UPacket {
-        message,
-        destination,
-        ..
-    } = upacket;
+pub fn make_server_packet(webpacket: WebPacket, sender: UserId) -> SPacket {
+    let destination = match &webpacket.destination {
+        WebDest::User(uid) => Destination::User(make_user_id(uid.clone()))
+    };
+    // we ignore webpacket.sender and webpacket.timestamp
+    // because that's only for sending it back
     SPacket {
         sender,
-        message,
-        destination: make_user_id(destination),
-    }
-}
-
-pub fn make_upacket(spacket: SPacket) -> UPacket {
-    let SPacket {
-        message,
+        time: get_current_time(),
         destination,
-        sender,
-    } = spacket;
-    UPacket {
-        sender: sender.to_string(),
-        message,
-        destination: destination.to_string(),
+        packet: webpacket.content,
     }
 }
 
-impl RoutingInfo<UserId> for SPacket {
-    fn get_to_from(&self) -> (UserId, UserId) {
+pub fn make_webpacket(spacket: SPacket) -> WebPacket {
+    let destination = match spacket.destination {
+        Destination::User(uid) => WebDest::User(uid.to_string())
+    };
+    WebPacket {
+        destination,
+        sender: Some(spacket.sender.to_string()),
+        timestamp: Some(spacket.time),
+        content: spacket.packet,
+    }
+}
+pub trait RoutingInfo {
+    fn get_to_from(&self) -> (Destination, UserId);
+}
+
+impl RoutingInfo for SPacket {
+    fn get_to_from(&self) -> (Destination, UserId) {
         (self.destination.clone(), self.sender.clone())
     }
 }
 
-impl TryFrom<Message> for UPacket {
+impl TryFrom<Message> for WebPacket {
     type Error = PacketError;
     fn try_from(value: Message) -> Result<Self, Self::Error> {
         match value {
             Message::Text(txt) => {
-                serde_json::from_str::<UPacket>(&txt).map_err(|e| PacketError::Serde(e))
+                serde_json::from_str::<WebPacket>(&txt).map_err(|e| PacketError::Serde(e))
             }
             v => Err(PacketError::WrongType(v)),
         }
     }
 }
 
-impl TryFrom<UPacket> for Message {
+impl TryFrom<WebPacket> for Message {
     type Error = PacketError;
-    fn try_from(value: UPacket) -> Result<Self, Self::Error> {
+    fn try_from(value: WebPacket) -> Result<Self, Self::Error> {
         serde_json::to_string(&value)
             .map(|s| Message::Text(s))
             .map_err(|e| PacketError::Serde(e))

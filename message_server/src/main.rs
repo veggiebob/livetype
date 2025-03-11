@@ -1,10 +1,10 @@
 #[macro_use]
 extern crate rocket;
 
-use crate::packet::{SPacket, make_server_packet, make_upacket};
+use crate::packet::{SPacket, make_server_packet, make_webpacket};
 use identity::make_user_id;
 use log::{error, info, warn};
-use packet::UPacket;
+use packet::WebPacket;
 use rocket::futures::channel::mpsc::UnboundedReceiver;
 use rocket::futures::{SinkExt, StreamExt};
 use rocket::response::status;
@@ -66,7 +66,7 @@ async fn handle_socket(
                     info!("Closing connection.");
                     break;
                 }
-                msg => match UPacket::try_from(msg) {
+                msg => match WebPacket::try_from(msg) {
                     Ok(upacket) => tx.send(make_server_packet(upacket, r_uid.clone())).unwrap(),
                     Err(e) => {
                         error!("Unable to parse upacket: {:?}", e);
@@ -81,7 +81,7 @@ async fn handle_socket(
         while let Some(server_message) = rx.next().await {
             // convert to UPacket
             info!("Sending along {:?}", &server_message);
-            let upacket = make_upacket(server_message);
+            let upacket = make_webpacket(server_message);
             sender.send(upacket.try_into().unwrap()).await.unwrap();
         }
     });

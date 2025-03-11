@@ -9,3 +9,7 @@ rocket_ws = "0.1.1"
 serde_json = "1.0"
 serde = { version = "1.0.218", features = ["derive"] }
 log = "0.4"
+
+[dependencies.uuid]
+version = "1.15"
+features = ["v4", "serde"]
