@@ -31,13 +31,23 @@ enum WebDest {
 #[derive(Deserialize, Serialize, Eq, PartialEq, Debug)]
 pub enum Packet {
     ///
-    NewMessage { content: String },
+    NewMessage {
+        #[serde(with = "uuid::serde::compact")]
+        uuid: Uuid,
+        content: String,
+    },
     // SyncMessage(Uuid, String), // to be used to sync database w/ chats
     /// A user only has one draft at a time in a conversation - the last thing they typed
     StartDraft,
+    /// Sent back to the sender after starting a new draft
+    NewDraft {
+        #[serde(with = "uuid::serde::compact")]
+        uuid: Uuid,
+    },
     EndDraft {
         #[serde(with = "uuid::serde::compact")]
-        uuid: Uuid
+        uuid: Uuid,
+        content: Option<String>, // just to sync easier
     },
     Edit {
         #[serde(with = "uuid::serde::compact")]

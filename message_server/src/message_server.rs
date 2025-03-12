@@ -7,11 +7,12 @@ use std::panic;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
-use crate::packet::{Destination, RoutingInfo};
+use crate::packet::{get_current_time, make_uuid, Destination, Packet, RoutingInfo, SPacket};
 
-pub struct MessageServer<M> {
+pub struct MessageServer<M, A> {
     open_senders: HashMap<UserId, UnboundedSender<M>>,
     backlog: HashMap<UserId, VecDeque<M>>,
+    annotator: A
 }
 
 #[derive(Debug)]
@@ -20,15 +21,97 @@ pub enum ServerError {
     TrySendError(UserId),
 }
 
-impl<M: RoutingInfo + Send + 'static> MessageServer<M> {
-    pub fn new() -> Self {
+pub trait MessageAnnotator<M> {
+    fn annotate(&self, message: M) -> Vec<M>;
+}
+
+struct NoAnnotator;
+impl<M> MessageAnnotator<M> for NoAnnotator {
+    fn annotate(&self, message: M) -> Vec<M> {
+        vec![message]
+    }
+}
+
+pub struct SPacketAnnotator;
+
+impl MessageAnnotator<SPacket> for SPacketAnnotator {
+    fn annotate(&self, message: SPacket) -> Vec<SPacket> {
+        let SPacket { sender, destination, packet, time } = message;
+        let current_time = get_current_time();
+        match packet {
+            Packet::StartDraft => {
+                let uuid = make_uuid();
+                vec![
+                    // inform destination of a new draft
+                    SPacket {
+                        sender: sender.clone(),
+                        destination: destination.clone(),
+                        time: current_time.clone(),
+                        packet: Packet::NewDraft {
+                            uuid: uuid.clone(),
+                        }
+                    },
+                    // inform sender of their draft's info
+                    SPacket {
+                        sender: sender.clone(),
+                        destination: Destination::User(sender.clone()), // inform sender!
+                        time: current_time.clone(),
+                        packet: Packet::NewDraft {
+                            uuid,
+                        }
+                    }
+                ]
+            },
+            Packet::EndDraft {content, uuid} =>
+                vec![
+                    SPacket {
+                        sender: sender.clone(),
+                        destination: destination.clone(),
+                        time: current_time.clone(),
+                        packet: Packet::EndDraft {
+                            content: content.clone(),
+                            uuid
+                        },
+                    },
+                    SPacket {
+                        sender: sender.clone(),
+                        destination: Destination::User(sender.clone()),
+                        time: current_time.clone(),
+                        packet: Packet::EndDraft {
+                            content,
+                            uuid
+                        },
+                    }
+                ],
+            // all of these just echo
+            // Packet::EndDraft { .. } => {}
+            // Packet::NewMessage { .. } => {}
+            // Packet::DraftInfo { .. } => {}
+            // Packet::Edit { .. } => {}
+            packet => vec![SPacket {
+                sender,
+                destination,
+                time,
+                packet
+            }]
+        }
+    }
+}
+
+impl<M, A> MessageServer<M, A>
+where
+    M: RoutingInfo + Send + 'static,
+    A: MessageAnnotator<M> + Send + 'static
+{
+    pub fn new(annotator: A) -> Self {
         MessageServer {
             backlog: HashMap::new(),
             open_senders: HashMap::new(),
+            annotator
         }
     }
-    pub fn start(/* config? */) -> (Sender<M>, Arc<Mutex<Self>>, ShutdownHandler) {
-        let server = Self::new();
+    pub fn start(annotator: A) -> (Sender<M>, Arc<Mutex<Self>>, ShutdownHandler) {
+        let server = Self::new(annotator);
         let server = Arc::new(Mutex::new(server));
         let server2 = Arc::clone(&server);
         let (tx, rx) = mpsc::channel();
@@ -85,6 +168,18 @@ impl<M: RoutingInfo + Send + 'static> MessageServer<M> {
     }
 
     pub fn process_message(&mut self, msg: M) -> Result<bool, ServerError> {
+        let msgs = self.annotator.annotate(msg);
+        let mut sent_directly = true;
+        for msg in msgs {
+            match self.process_message_internal(msg) {
+                Ok(sd) => sent_directly &= sd,
+                Err(e) => return Err(e)
+            }
+        }
+        Ok(sent_directly)
+    }
+
+    fn process_message_internal(&mut self, msg: M) -> Result<bool, ServerError> {
         // route and re-send it
         let (to, _from) = msg.get_to_from();
         let to = match to {
@@ -116,6 +211,7 @@ impl<M: RoutingInfo + Send + 'static> MessageServer<M> {
         Ok(false)
     }
 }
+
 
 pub struct ShutdownHandler(Mutex<Vec<JoinHandle<()>>>);
 impl ShutdownHandler {
@@ -159,6 +255,7 @@ mod test {
     use rocket::futures::{StreamExt};
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use crate::message_server::NoAnnotator;
 
     // stolen from https://github.com/rust-lang/book/blob/main/packages/trpl/src/lib.rs
     pub fn run<F: Future>(future: F) -> F::Output {
@@ -172,7 +269,7 @@ mod test {
         // but for this example it was easier to get it set up on the main
         // thread... hopefully this problem is not in the main server
 
-        let server: message_server::MessageServer<SPacket> = message_server::MessageServer::new();
+        let server: message_server::MessageServer<SPacket, _> = message_server::MessageServer::new(NoAnnotator);
         let server = Arc::new(Mutex::new(server));
         let (s_sender, s_receiver) = std::sync::mpsc::channel();
         let uid_a = make_user_id("A".to_string());

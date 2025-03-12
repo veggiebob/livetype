@@ -14,12 +14,13 @@ use rocket_ws::stream::DuplexStream;
 use rocket_ws::{Channel, Message, WebSocket};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, mpsc};
+use crate::message_server::SPacketAnnotator;
 
 mod identity;
 pub mod message_server;
 pub mod packet;
 
-type MessageServer = State<Arc<Mutex<message_server::MessageServer<SPacket>>>>;
+type MessageServer = State<Arc<Mutex<message_server::MessageServer<SPacket, message_server::SPacketAnnotator>>>>;
 
 #[derive(Clone)]
 struct ServerSender(mpsc::Sender<SPacket>);
@@ -105,7 +106,7 @@ async fn handle_socket(
 
 #[launch]
 fn rocket() -> _ {
-    let (s_sender, server, shutdown_server) = message_server::MessageServer::start();
+    let (s_sender, server, shutdown_server) = message_server::MessageServer::start(SPacketAnnotator);
     rocket::build()
         .attach(shutdown_server)
         .manage(ServerSender(s_sender))
