@@ -1,5 +1,5 @@
 import React, { useEffect, useReducer, useRef, useState } from 'react';
-import { WebPacket, Message, Draft, UserId, assertUserId, assertUuid, uuid2str, str2uuid, Base64Uuid } from './protocol';
+import { WebPacket, Message, Draft, UserId, assertUserId, assertUuid, uuid2str, str2uuid, Base64Uuid, WebDest } from './protocol';
 import Messages from './Messages';
 import DraftMessage from './DraftMessage';
 
@@ -16,6 +16,7 @@ interface State {
   messages: Message[],
   currentDraft: Draft,
   workingDraft: boolean,
+  workingDest?: WebDest,
   senderDrafts: Map<UserId, Draft>,
 }
 
@@ -46,6 +47,7 @@ const ACTIONS = {
   END_DRAFT: 'END_DRAFT',
   UPDATE_WORKING_DRAFT: 'UPDATE_WORKING_DRAFT',
   SEND_DRAFT: 'SEND_DRAFT',
+  RESET: 'RESET',
 }
 
 function reducer(state: State, action: Action): State {
@@ -100,6 +102,7 @@ function reducer(state: State, action: Action): State {
       let uuid: Base64Uuid = payload.uuid;
       // if the uuid matches the current draft, add a message and clear the current draft
       // if it matches a sender draft, add a message and remove the sender draft
+      console.log('new message: ', packet);
       if (state.currentDraft.uuid === uuid) {
         return {
           ...state,
@@ -110,8 +113,10 @@ function reducer(state: State, action: Action): State {
             end_time: undefined
           },
           messages: [...state.messages, {
-            sender: assertUserId(packet.sender),
-            destination: packet.destination,
+            sender: state.username,
+            destination: {
+              User: assertUserId(state.workingDest?.User)
+            },
             uuid: uuid,
             content: present(packet.content.EndDraft?.content),
             start_time: present(state.currentDraft.start_time),
@@ -142,6 +147,8 @@ function reducer(state: State, action: Action): State {
       }
     case ACTIONS.SEND_DRAFT:
       return state;
+    case ACTIONS.RESET:
+      return initialState;
     default:
       return state;
   }
@@ -273,6 +280,7 @@ const Login: React.FC = () => {
         setIsConnected(false);
         console.log('❌ Disconnected from server');
         setSubmitted(false);
+        dispatch({ type: ACTIONS.RESET, payload: null });
       }
       ws.onerror = (error) => {
         console.error('⚠️ Error:', error);
@@ -371,11 +379,7 @@ const Login: React.FC = () => {
         Message room for {username}
         <br />
         <div>
-          <Messages messages={state.messages} />
-          {/* render drafts */}
-          {[...state.senderDrafts.entries()].map(([sender, draft]) => {
-            return (<DraftMessage key={draft.uuid} sender={sender} draft={draft} />);
-          })}
+          <Messages messages={state.messages} username={state.username} drafts={state.senderDrafts} />
           Send to: <input type="text" id='send_to' ref={sendFieldRef}/>
           Message: <input type="text" id='message_content' ref={inputRef} onInput={() => { handleTypedDraft(getTextboxContent()); }} />
           <button onClick={

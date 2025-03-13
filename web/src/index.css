@@ -1,4 +1,4 @@
-:root {
+/* :root {
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
@@ -65,4 +65,116 @@ button:focus-visible {
   button {
     background-color: #f9f9f9;
   }
+} */
+
+:root {
+
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #242424;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --color-background: #242424;
+  --color-primary: #646cff;
+  --color-secondary: #f9f9f9;
+  --color-tertiary: #1a1a1a;
+
+
+  /* color creator */
+  /* https://coolors.co/363732-0083a3-e1bb80-9c3848-c33149 */
+  /* CSS HEX */
+--color-1: #363732ff;
+--color-1b: #54564E;
+--color-2: #0083a3ff;
+--color-2b: #00A3CC;
+--color-3: #e1bb80ff;
+--color-4: #9c3848ff;
+--color-5: #c33149ff;
+
+/* CSS HSL */
+/* --black-olive: hsla(72, 5%, 21%, 1);
+--cerulean: hsla(192, 100%, 32%, 1);
+--ecru: hsla(36, 62%, 69%, 1);
+--cordovan: hsla(350, 47%, 42%, 1);
+--cardinal: hsla(350, 60%, 48%, 1); */
+
+  /* SCSS HEX */
+  /* $black-olive: #363732ff;
+  $cerulean: #0083a3ff;
+  $ecru: #e1bb80ff;
+  $cordovan: #9c3848ff;
+  $cardinal: #c33149ff;
+
+  /* SCSS HSL */
+  /* $black-olive: hsla(72, 5%, 21%, 1);
+  $cerulean: hsla(192, 100%, 32%, 1);
+  $ecru: hsla(36, 62%, 69%, 1);
+  $cordovan: hsla(350, 47%, 42%, 1);
+  $cardinal: hsla(350, 60%, 48%, 1); */
+
+  /* SCSS RGB */
+  /* $black-olive: rgba(54, 55, 50, 1);
+  $cerulean: rgba(0, 131, 163, 1);
+  $ecru: rgba(225, 187, 128, 1);
+  $cordovan: rgba(156, 56, 72, 1);
+  $cardinal: rgba(195, 49, 73, 1); */
+
+  /* SCSS Gradient */
+  /* $gradient-top: linear-gradient(0deg, #363732ff, #0083a3ff, #e1bb80ff, #9c3848ff, #c33149ff);
+  $gradient-right: linear-gradient(90deg, #363732ff, #0083a3ff, #e1bb80ff, #9c3848ff, #c33149ff);
+  $gradient-bottom: linear-gradient(180deg, #363732ff, #0083a3ff, #e1bb80ff, #9c3848ff, #c33149ff);
+  $gradient-left: linear-gradient(270deg, #363732ff, #0083a3ff, #e1bb80ff, #9c3848ff, #c33149ff);
+  $gradient-top-right: linear-gradient(45deg, #363732ff, #0083a3ff, #e1bb80ff, #9c3848ff, #c33149ff);
+  $gradient-bottom-right: linear-gradient(135deg, #363732ff, #0083a3ff, #e1bb80ff, #9c3848ff, #c33149ff);
+  $gradient-top-left: linear-gradient(225deg, #363732ff, #0083a3ff, #e1bb80ff, #9c3848ff, #c33149ff);
+  $gradient-bottom-left: linear-gradient(315deg, #363732ff, #0083a3ff, #e1bb80ff, #9c3848ff, #c33149ff);
+  $gradient-radial: radial-gradient(#363732ff, #0083a3ff, #e1bb80ff, #9c3848ff, #c33149ff); */
+}
+
+ul {
+  list-style-type: none;
+  padding: 0;
+}
+
+li {
+  list-style-type: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sent-message {
+  background-color: var(--color-2);
+  color: white;
+  border-radius: 10px;
+  padding: 10px;
+  margin: 10px;
+  max-width: 60%;
+  align-self: flex-end;
+  text-align: right;
+}
+
+.received-message {
+  background-color: var(--color-1);
+  color: white;
+  border-radius: 10px;
+  padding: 10px;
+  margin: 10px;
+  max-width: 60%;
+
+}
+
+.received-draft {
+  background-color: var(--color-1b);
+  color: white;
+  border-radius: 5px;
+  margin: 10px;
+  max-width: 60%;
 }

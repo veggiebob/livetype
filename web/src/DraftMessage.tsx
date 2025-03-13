@@ -16,10 +16,9 @@ const DraftMessage: React.FC<DraftMessageProps> = ({ draft, sender }) => {
 
     return () => clearInterval(cursorInterval);
   }, []);
-
+  
   return (
-    <div>
-      <p><strong>{sender}</strong></p>
+    <div className='received-draft'>
       <p>
         {draft.content}{showCursor && <span className="blinking-cursor">|</span>}
       </p>

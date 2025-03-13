@@ -19,6 +19,7 @@ use crate::message_server::SPacketAnnotator;
 mod identity;
 pub mod message_server;
 pub mod packet;
+mod storage;
 
 type MessageServer = State<Arc<Mutex<message_server::MessageServer<SPacket, message_server::SPacketAnnotator>>>>;
 
