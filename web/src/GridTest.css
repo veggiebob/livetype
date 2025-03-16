@@ -1,0 +1,36 @@
+.message-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px 5px;
+
+}
+
+.message-grid > div {
+  padding: 1px;
+  border: 1px solid #ccc;
+  justify-content: space-between;
+}
+
+.right {
+  grid-column: 3;
+}
+
+.right-full {
+  grid-column: 2 / 4;
+}
+
+.left {
+  grid-column: 1;
+}
+
+.left-full {
+  grid-column: 1 / 3;
+}
+
+.both {
+  grid-column: span 3;
+}
+
+.tall {
+  grid-row: span 2;
+}

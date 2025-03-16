@@ -9,29 +9,22 @@ type MessagesProps = {
 };
 
 const Messages: React.FC<MessagesProps> = ({ messages, drafts, username }) => {
-  let senders = new Set<string>();
+  let users = new Set<string>();
   messages.forEach((message) => {
-    senders.add(message.sender);
+    users.add(message.sender);
+    if (message.destination.User) {
+      users.add(message.destination.User);
+    }
   });
   drafts.forEach((draft, sender) => {
-    senders.add(sender);
+    users.add(sender);
   });
-  senders.delete(username);
-  // return (
-  //   <div>
-  //     {messages.map((message) => (
-  //       <div key={message.uuid}>
-  //         <p><strong>{message.sender}:</strong> {message.content}</p>
-  //       </div>
-  //     ))}
-  //   </div>
-  // );
+  users.delete(username); // don't have a chat with yourself
   return (
     <div>
-      {Array.from(senders).map((sender) => {
+      {Array.from(users).map((sender) => {
         let draft = drafts.get(sender);
         let s_messages = messages.filter((message) => {
-          console.log(message.destination.User, sender);
           return message.destination.User === sender || message.sender === sender;
         });
         return (

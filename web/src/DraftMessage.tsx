@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Draft } from './protocol';
+import './DraftMessage.css';
 
 interface DraftMessageProps {
   draft: Draft;
@@ -19,9 +20,7 @@ const DraftMessage: React.FC<DraftMessageProps> = ({ draft, sender }) => {
   
   return (
     <div className='received-draft'>
-      <p>
-        {draft.content}{showCursor && <span className="blinking-cursor">|</span>}
-      </p>
+        {draft.content}{<span className="blinking-cursor">{showCursor && "|"}</span>}
     </div>
   );
 };

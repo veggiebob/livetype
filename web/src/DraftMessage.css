@@ -1,0 +1,11 @@
+.received-draft {
+  color: white;
+  max-width: fit-content;
+  padding: 5px 10px 5px 10px;
+  text-decoration: underline;
+}
+
+.blinking-cursor {
+  min-width: 3px;
+  padding: 3px;
+}

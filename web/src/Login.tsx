@@ -16,7 +16,6 @@ interface State {
   messages: Message[],
   currentDraft: Draft,
   workingDraft: boolean,
-  workingDest?: WebDest,
   senderDrafts: Map<UserId, Draft>,
 }
 
@@ -50,120 +49,123 @@ const ACTIONS = {
   RESET: 'RESET',
 }
 
-function reducer(state: State, action: Action): State {
-  // if action.payload is a function, call it with the current state
-  let payload = action.payload;
-  if (typeof payload === 'function') {
-    payload = payload(state);
-  }
-  console.log('dispatching action', action, 'with payload ', payload);
-  switch (action.type) {
-    case ACTIONS.UPDATE_WORKING_DRAFT:
-      return {
-        ...state,
-        workingDraft: payload
-      };
-    case ACTIONS.UPDATE_USERNAME:
-      return {
-        ...state,
-        username: payload.username
-      };
-    case ACTIONS.ADD_MESSAGE:
-      return {
-        ...state,
-        messages: [...state.messages, payload]
-      };
-    case ACTIONS.UPDATE_MESSAGE:
-      return {
-        ...state,
-        messages: state.messages.map(message => {
-          if (message.uuid === payload.uuid) {
-            return {
-              ...message,
-              content: payload.content
-            }
-          } else {
-            return message;
-          }
-        })
-      };
-    case ACTIONS.UPDATE_CURRENT_DRAFT:
-      return {
-        ...state,
-        currentDraft: payload
-      };
-    case ACTIONS.UPDATE_SENDER_DRAFTS:
-      return {
-        ...state,
-        senderDrafts: payload
-      };
-    case ACTIONS.END_DRAFT:
-      let packet: WebPacket = payload.packet;
-      let uuid: Base64Uuid = payload.uuid;
-      // if the uuid matches the current draft, add a message and clear the current draft
-      // if it matches a sender draft, add a message and remove the sender draft
-      console.log('new message: ', packet);
-      if (state.currentDraft.uuid === uuid) {
-        return {
-          ...state,
-          currentDraft: {
-            uuid: undefined,
-            content: '',
-            start_time: undefined,
-            end_time: undefined
-          },
-          messages: [...state.messages, {
-            sender: state.username,
-            destination: {
-              User: assertUserId(state.workingDest?.User)
-            },
-            uuid: uuid,
-            content: present(packet.content.EndDraft?.content),
-            start_time: present(state.currentDraft.start_time),
-            end_time: present(packet.timestamp),
-          }],
-          workingDraft: false
-        }
-      } else {
-        let senderDrafts = new Map(state.senderDrafts);
-        for (let [sender, draft] of [...senderDrafts.entries()]) {
-          if (draft.uuid === uuid) {
-            senderDrafts.delete(sender);
-            return {
-              ...state,
-              senderDrafts: senderDrafts,
-              messages: [...state.messages, {
-                sender: assertUserId(packet.sender),
-                destination: packet.destination,
-                uuid: uuid,
-                content: present(packet.content.EndDraft?.content),
-                start_time: present(draft.start_time),
-                end_time: present(packet.timestamp),
-              }]
-            }
-          }
-        }
-        return state;
-      }
-    case ACTIONS.SEND_DRAFT:
-      return state;
-    case ACTIONS.RESET:
-      return initialState;
-    default:
-      return state;
-  }
-}
 
 const Login: React.FC = () => {
   const [username, setUsername] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [triedLogin, setTriedLogin] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  const [state, dispatch] = useReducer(reducer, initialState);
   const inputRef = useRef<HTMLInputElement>(null);
   const [inputContent, setInputContent] = useState('');
   const sendFieldRef = useRef<HTMLInputElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+
+  function reducer(state: State, action: Action): State {
+    // if action.payload is a function, call it with the current state
+    let payload = action.payload;
+    if (typeof payload === 'function') {
+      payload = payload(state);
+    }
+    console.log('dispatching action', action, 'with payload ', payload);
+    switch (action.type) {
+      case ACTIONS.UPDATE_WORKING_DRAFT:
+        return {
+          ...state,
+          workingDraft: payload
+        };
+      case ACTIONS.UPDATE_USERNAME:
+        return {
+          ...state,
+          username: payload.username
+        };
+      case ACTIONS.ADD_MESSAGE:
+        return {
+          ...state,
+          messages: [...state.messages, payload]
+        };
+      case ACTIONS.UPDATE_MESSAGE:
+        return {
+          ...state,
+          messages: state.messages.map(message => {
+            if (message.uuid === payload.uuid) {
+              return {
+                ...message,
+                content: payload.content
+              }
+            } else {
+              return message;
+            }
+          })
+        };
+      case ACTIONS.UPDATE_CURRENT_DRAFT:
+        return {
+          ...state,
+          currentDraft: payload
+        };
+      case ACTIONS.UPDATE_SENDER_DRAFTS:
+        return {
+          ...state,
+          senderDrafts: payload
+        };
+      case ACTIONS.END_DRAFT:
+        let packet: WebPacket = payload.packet;
+        let uuid: Base64Uuid = payload.uuid;
+        // if the uuid matches the current draft, add a message and clear the current draft
+        // if it matches a sender draft, add a message and remove the sender draft
+        console.log('new message: ', packet);
+        if (state.currentDraft.uuid === uuid) {
+          return {
+            ...state,
+            currentDraft: {
+              uuid: undefined,
+              content: '',
+              start_time: undefined,
+              end_time: undefined
+            },
+            messages: [...state.messages, {
+              sender: state.username,
+              destination: {
+                User: assertUserId(sendFieldRef.current?.value)
+              },
+              uuid: uuid,
+              content: present(packet.content.EndDraft?.content),
+              start_time: present(state.currentDraft.start_time),
+              end_time: present(packet.timestamp),
+            }],
+            workingDraft: false
+          }
+        } else {
+          let senderDrafts = new Map(state.senderDrafts);
+          for (let [sender, draft] of [...senderDrafts.entries()]) {
+            if (draft.uuid === uuid) {
+              senderDrafts.delete(sender);
+              return {
+                ...state,
+                senderDrafts: senderDrafts,
+                messages: [...state.messages, {
+                  sender: assertUserId(packet.sender),
+                  destination: packet.destination,
+                  uuid: uuid,
+                  content: present(packet.content.EndDraft?.content),
+                  start_time: present(draft.start_time),
+                  end_time: present(packet.timestamp),
+                }]
+              }
+            }
+          }
+          return state;
+        }
+      case ACTIONS.SEND_DRAFT:
+        return state;
+      case ACTIONS.RESET:
+        return initialState;
+      default:
+        return state;
+    }
+  }
+
+  const [state, dispatch] = useReducer(reducer, initialState);
+  
 
   useEffect(() => {
     console.log('current draft', state.currentDraft);
