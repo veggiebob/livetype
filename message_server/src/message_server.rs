@@ -1,6 +1,6 @@
 use crate::identity::UserId;
 use crate::packet::{Destination, Packet, RoutingInfo, SPacket, get_current_time, make_uuid};
-use crate::protocol::{Draft, Timestamp};
+use crate::protocol::{Draft, MessageId, Timestamp};
 use crate::storage::{MessageDAOError, MessageRoomDAO, MessagesDAO, RoomId};
 use rocket::fairing::{Fairing, Info};
 use rocket::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -23,6 +23,9 @@ pub enum ServerError {
     AlreadyInUse(UserId),
     TrySendError(UserId),
     DAOError(MessageDAOError),
+    MissingDraft((UserId, Destination)),
+    /// (expected, received)
+    BadEndDraft(MessageId, MessageId)
 }
 
 impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
@@ -183,8 +186,11 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
         };
         self.flush_backlog(&to)?; // will only go if sender exists
         let mut disconnected = false;
-        let mut try_send = |msg| {
-            if let Some(tx) = self.open_senders.get(&to) {
+        let mut try_send = |msg: SPacket| {
+            let dest = match &msg.destination {
+                Destination::User(u) => u
+            };
+            if let Some(tx) = self.open_senders.get(dest) {
                 // then, send the message
                 match tx.unbounded_send(msg) {
                     Ok(_) => return Ok(None),
@@ -210,9 +216,17 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
         } = msg;
         let current_time = get_current_time();
         let draft_key = (sender.clone(), destination.clone());
-
-        let backlog_packets = match packet {
+        
+        let mut enqueue = |recipient, p| {
+            info!("Queueing message {:?} for {:?}", &p, &recipient);
+            self.backlog.entry(recipient)
+                .or_default()
+                .push_back(p);
+        };
+        
+        match packet {
             Packet::StartDraft => {
+                info!("{:?} started a draft", sender.clone());
                 let uuid = make_uuid();
                 self.current_drafts.insert(
                     draft_key.clone(),
@@ -222,7 +236,7 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
                         start_time: current_time,
                     },
                 );
-                let p1 = SPacket {
+                try_send(SPacket {
                     sender: sender.clone(),
                     destination: destination.clone(),
                     time: current_time,
@@ -230,10 +244,10 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
                         uuid,
                         start_time: current_time,
                     },
-                };
+                })?;
 
                 // inform sender of their draft's info
-                let p2 = SPacket {
+                try_send(SPacket {
                     sender: sender.clone(),
                     destination: Destination::User(sender.clone()), // inform sender!
                     time: current_time,
@@ -241,13 +255,45 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
                         uuid,
                         start_time: current_time,
                     },
-                };
-                for p in vec![p1, p2] {
-                    try_send(p)?;
-                }
-                vec![]
+                })?;
             }
             Packet::EndDraft { content, uuid } => {
+                let p1 = SPacket {
+                    sender: sender.clone(),
+                    destination: destination.clone(),
+                    time: current_time,
+                    packet: Packet::EndDraft {
+                        content: content.clone(),
+                        uuid,
+                    },
+                };
+                try_send(SPacket {
+                    sender: sender.clone(),
+                    destination: Destination::User(sender.clone()),
+                    time: current_time,
+                    packet: Packet::EndDraft { content: content.clone(), uuid },
+                })?;
+                // info!("Current drafts available: {:?}", self.current_drafts);
+                let draft = self.current_drafts.get(&draft_key)
+                    .ok_or(ServerError::MissingDraft(draft_key.clone()))?;
+                if let Some(_p) = try_send(p1)? {
+                    if let Destination::User(recipient) = destination.clone() {
+                        if draft.id != uuid {
+                            Err(ServerError::BadEndDraft(draft.id, uuid))?;
+                        }
+                        enqueue(recipient.clone(), SPacket {
+                            sender: sender.clone(),
+                            destination: destination.clone(),
+                            time: current_time,
+                            packet: Packet::NewMessage {
+                                uuid,
+                                content: content.clone().unwrap_or(draft.content.clone()),
+                                start_time: draft.start_time,
+                                end_time: current_time,
+                            },
+                        })
+                    }
+                }
                 if let Some(draft) = self.current_drafts.remove(&draft_key) {
                     self.storage
                         .add_message(
@@ -258,28 +304,6 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
                             warn!("Unable to end draft on message {}: {:?}", uuid, e)
                         });
                 }
-                let p1 = SPacket {
-                    sender: sender.clone(),
-                    destination: destination.clone(),
-                    time: current_time,
-                    packet: Packet::EndDraft {
-                        content: content.clone(),
-                        uuid,
-                    },
-                };
-                let p2 = SPacket {
-                    sender: sender.clone(),
-                    destination: Destination::User(sender.clone()),
-                    time: current_time,
-                    packet: Packet::EndDraft { content, uuid },
-                };
-                let mut unsent = vec![];
-                for p in vec![p1, p2] {
-                    if let Some(p) = try_send(p)? {
-                        unsent.push(p);
-                    }
-                }
-                unsent
             }
             // all of these just echo
             // Packet::NewMessage { .. } => {}
@@ -302,7 +326,7 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
                             });
                     }
                 }
-                let p1 = SPacket {
+                try_send(SPacket {
                     sender,
                     destination,
                     time,
@@ -311,26 +335,17 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
                         uuid,
                         editing_draft,
                     },
-                };
-                try_send(p1)?;
-                vec![]
+                })?;
             }
-            packet => try_send(SPacket {
-                sender,
-                destination,
-                time,
-                packet,
-            })?
-            .map(|_p| vec![])
-            .unwrap_or(vec![]),
+            packet => {
+                try_send(SPacket {
+                    sender,
+                    destination,
+                    time,
+                    packet,
+                })?;
+            },
         };
-        for bp in backlog_packets {
-            warn!("Message added to backlog: {:?}", &bp);
-            self.backlog
-                .entry(to.clone())
-                .or_default()
-                .push_back(bp);
-        }
         if disconnected {
             // if they disconnect, remove the sending channel
             self.deregister(&to);
