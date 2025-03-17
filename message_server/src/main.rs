@@ -83,7 +83,6 @@ async fn handle_socket(
     let send_task = tokio::spawn(async move {
         while let Some(server_message) = rx.next().await {
             // convert to UPacket
-            info!("Sending along {:?}", &server_message);
             let upacket = make_webpacket(server_message);
             sender.send(upacket.try_into().unwrap()).await.unwrap();
         }

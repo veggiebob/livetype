@@ -1,6 +1,7 @@
 use crate::identity::UserId;
 use crate::packet::{Destination, Packet, RoutingInfo, SPacket, get_current_time, make_uuid};
 use crate::protocol::{Draft, Timestamp};
+use crate::storage::{MessageDAOError, MessageRoomDAO, MessagesDAO, RoomId};
 use rocket::fairing::{Fairing, Info};
 use rocket::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use rocket::{Orbit, Rocket};
@@ -9,7 +10,6 @@ use std::panic;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
-use crate::storage::{MessageRoomDAO, MessagesDAO};
 
 pub struct MessageServer<DB> {
     open_senders: HashMap<UserId, UnboundedSender<SPacket>>,
@@ -22,6 +22,7 @@ pub struct MessageServer<DB> {
 pub enum ServerError {
     AlreadyInUse(UserId),
     TrySendError(UserId),
+    DAOError(MessageDAOError),
 }
 
 impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
@@ -43,13 +44,7 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
             for spacket in rx {
                 let mut s = server.lock().unwrap();
                 match s.process_message(spacket) {
-                    Ok(sent) => {
-                        if sent {
-                            info!("Message routed & sent!")
-                        } else {
-                            info!("Message added to backlog.")
-                        }
-                    }
+                    Ok(_sent) => {}
                     Err(e) => {
                         error!("Error occurred while sending message: {e:?}")
                     }
@@ -59,17 +54,72 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
         (tx, server2, ShutdownHandler::new(handle))
     }
     pub fn register(&mut self, uid: UserId) -> Result<UnboundedReceiver<SPacket>, ServerError> {
+        // reject if this user is already connected
         if self.open_senders.contains_key(&uid) {
             return Err(ServerError::AlreadyInUse(uid));
         }
+        // create channel, connect them
         let (tx, rx) = rocket::futures::channel::mpsc::unbounded();
         self.open_senders.insert(uid.clone(), tx);
-        self.flush_backlog(&uid)?; // send them the messages they missed
+
+        // catch them up
+        self.flush_backlog(&uid)?;
+        let time = get_current_time();
+
+        for ((sender, dest), draft) in self.current_drafts.iter() {
+            match dest {
+                Destination::User(to) => {
+                    if to == &uid {
+                        info!("Catching up user {:?}", to);
+                        // this is the one we just created
+                        if let Some(tx) = self.open_senders.get(&uid) {
+                            tx.unbounded_send(SPacket {
+                                sender: sender.clone(),
+                                destination: dest.clone(),
+                                time,
+                                packet: Packet::NewDraft {
+                                    uuid: draft.id,
+                                    start_time: draft.start_time,
+                                },
+                            })
+                            .unwrap_or_else(|t| {
+                                warn!(
+                                    "Could not resend draft to newly registered user {:?}: {:?}",
+                                    &uid, t
+                                );
+                            });
+                            tx.unbounded_send(SPacket {
+                                sender: sender.clone(),
+                                destination: dest.clone(),
+                                time,
+                                packet: Packet::Edit {
+                                    uuid: draft.id,
+                                    content: draft.content.clone(),
+                                    editing_draft: true,
+                                },
+                            })
+                            .unwrap_or_else(|t| {
+                                warn!(
+                                    "Could not resend draft to newly registered user {:?}: {:?}",
+                                    &uid, t
+                                );
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // give the receiver so they can talk to the server
         Ok(rx)
     }
 
     pub fn deregister(&mut self, uid: &UserId) {
+        // make sure they're disconnected so we can't send anything to them
         self.open_senders.remove(uid);
+
+        // remove all their drafted messages (not saving them)
+        // and notify the clients they were sending them to
         let mut drafts_to_remove = vec![];
         let current_time: Timestamp = get_current_time();
         for ((sender, dest), draft) in self.current_drafts.iter() {
@@ -82,18 +132,20 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
                                 sender: uid.clone(),
                                 destination: dest.clone(),
                                 time: current_time,
-                                packet: Packet::DiscardDraft {
-                                    uuid: draft.id
-                                },
-                            }).unwrap_or_else(|err| 
-                                warn!("Unable to send DiscardDraft packet to receiver {:?}: {:?}", to, err)
-                            );
+                                packet: Packet::DiscardDraft { uuid: draft.id },
+                            })
+                            .unwrap_or_else(|err| {
+                                warn!(
+                                    "Unable to send DiscardDraft packet to receiver {:?}: {:?}",
+                                    to, err
+                                )
+                            });
                         }
                     }
                 }
             }
         }
-        
+
         for k in drafts_to_remove {
             self.current_drafts.remove(&k);
         }
@@ -118,30 +170,48 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
     }
 
     pub fn process_message(&mut self, msg: SPacket) -> Result<bool, ServerError> {
-        let msgs = self.annotate(msg);
-        let mut sent_directly = true;
-        for msg in msgs {
-            match self.process_message_internal(msg) {
-                Ok(sd) => sent_directly &= sd,
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(sent_directly)
+        self.process_message_internal(msg)
     }
 
     /// Create necessary extra packets to pass messages along to everyone that needs it.
     /// Also maintain state with storage.
-    fn annotate(&mut self, message: SPacket) -> Vec<SPacket> {
+    fn process_message_internal(&mut self, msg: SPacket) -> Result<bool, ServerError> {
+        // route and re-send it
+        let (to, _from) = msg.get_to_from();
+        let to = match to {
+            Destination::User(uid) => uid,
+        };
+        self.flush_backlog(&to)?; // will only go if sender exists
+        let mut disconnected = false;
+        let mut try_send = |msg| {
+            if let Some(tx) = self.open_senders.get(&to) {
+                // then, send the message
+                match tx.unbounded_send(msg) {
+                    Ok(_) => return Ok(None),
+                    Err(e) => {
+                        if e.is_disconnected() {
+                            disconnected = true;
+                            Ok(Some(e.into_inner())) // retrieve the message
+                        } else {
+                            return Err(ServerError::TrySendError(to.clone()));
+                        }
+                    }
+                }
+            } else {
+                Ok(Some(msg))
+            }
+        };
+
         let SPacket {
             sender,
             destination,
             packet,
             time,
-        } = message;
+        } = msg;
         let current_time = get_current_time();
-
         let draft_key = (sender.clone(), destination.clone());
-        match packet {
+
+        let backlog_packets = match packet {
             Packet::StartDraft => {
                 let uuid = make_uuid();
                 self.current_drafts.insert(
@@ -152,59 +222,78 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
                         start_time: current_time,
                     },
                 );
-                vec![
-                    // inform destination of a new draft
-                    SPacket {
-                        sender: sender.clone(),
-                        destination: destination.clone(),
-                        time: current_time,
-                        packet: Packet::NewDraft { uuid },
+                let p1 = SPacket {
+                    sender: sender.clone(),
+                    destination: destination.clone(),
+                    time: current_time,
+                    packet: Packet::NewDraft {
+                        uuid,
+                        start_time: current_time,
                     },
-                    // inform sender of their draft's info
-                    SPacket {
-                        sender: sender.clone(),
-                        destination: Destination::User(sender.clone()), // inform sender!
-                        time: current_time,
-                        packet: Packet::NewDraft { uuid },
+                };
+
+                // inform sender of their draft's info
+                let p2 = SPacket {
+                    sender: sender.clone(),
+                    destination: Destination::User(sender.clone()), // inform sender!
+                    time: current_time,
+                    packet: Packet::NewDraft {
+                        uuid,
+                        start_time: current_time,
                     },
-                ]
+                };
+                for p in vec![p1, p2] {
+                    try_send(p)?;
+                }
+                vec![]
             }
             Packet::EndDraft { content, uuid } => {
                 if let Some(draft) = self.current_drafts.remove(&draft_key) {
-                    self.storage.add_message(
-                        draft.into_message(sender.clone(), current_time),
-                        destination.clone(),
-                    ).unwrap_or_else(|e| 
-                        warn!("Unable to end draft on message {}: {:?}", uuid, e)
-                    );
+                    self.storage
+                        .add_message(
+                            draft.into_message(sender.clone(), current_time),
+                            destination.clone(),
+                        )
+                        .unwrap_or_else(|e| {
+                            warn!("Unable to end draft on message {}: {:?}", uuid, e)
+                        });
                 }
-                vec![
-                    SPacket {
-                        sender: sender.clone(),
-                        destination: destination.clone(),
-                        time: current_time,
-                        packet: Packet::EndDraft {
-                            content: content.clone(),
-                            uuid,
-                        },
+                let p1 = SPacket {
+                    sender: sender.clone(),
+                    destination: destination.clone(),
+                    time: current_time,
+                    packet: Packet::EndDraft {
+                        content: content.clone(),
+                        uuid,
                     },
-                    SPacket {
-                        sender: sender.clone(),
-                        destination: Destination::User(sender.clone()),
-                        time: current_time,
-                        packet: Packet::EndDraft { content, uuid },
-                    },
-                ]
+                };
+                let p2 = SPacket {
+                    sender: sender.clone(),
+                    destination: Destination::User(sender.clone()),
+                    time: current_time,
+                    packet: Packet::EndDraft { content, uuid },
+                };
+                let mut unsent = vec![];
+                for p in vec![p1, p2] {
+                    if let Some(p) = try_send(p)? {
+                        unsent.push(p);
+                    }
+                }
+                unsent
             }
             // all of these just echo
             // Packet::NewMessage { .. } => {}
             // Packet::DraftInfo { .. } => {}
-            Packet::Edit { content, uuid } => {
+            Packet::Edit {
+                content,
+                uuid,
+                editing_draft,
+            } => {
                 if let Some(draft) = self.current_drafts.get_mut(&draft_key) {
                     if draft.id == uuid {
                         draft.content = content.clone();
                     }
-                } else {
+                } else if !editing_draft {
                     let room_id = draft_key.into();
                     if let Ok(room) = self.storage.get_room_mut(&room_id) {
                         room.edit_message(uuid, content.clone())
@@ -213,52 +302,46 @@ impl<DB: Send + 'static + MessagesDAO> MessageServer<DB> {
                             });
                     }
                 }
-                vec![SPacket {
+                let p1 = SPacket {
                     sender,
                     destination,
                     time,
-                    packet: Packet::Edit { content, uuid }
-                }]
+                    packet: Packet::Edit {
+                        content,
+                        uuid,
+                        editing_draft,
+                    },
+                };
+                try_send(p1)?;
+                vec![]
             }
-            packet => vec![SPacket {
+            packet => try_send(SPacket {
                 sender,
                 destination,
                 time,
                 packet,
-            }],
+            })?
+            .map(|_p| vec![])
+            .unwrap_or(vec![]),
+        };
+        for bp in backlog_packets {
+            warn!("Message added to backlog: {:?}", &bp);
+            self.backlog
+                .entry(to.clone())
+                .or_default()
+                .push_back(bp);
         }
-    }
-
-    fn process_message_internal(&mut self, msg: SPacket) -> Result<bool, ServerError> {
-        // route and re-send it
-        let (to, _from) = msg.get_to_from();
-        let to = match to {
-            Destination::User(uid) => uid,
-        };
-        self.flush_backlog(&to)?; // will only go if sender exists
-        let mut disconnected = false;
-        let msg = if let Some(tx) = self.open_senders.get(&to) {
-            // then, send the message
-            match tx.unbounded_send(msg) {
-                Ok(_) => return Ok(true),
-                Err(e) => {
-                    if e.is_disconnected() {
-                        disconnected = true;
-                        e.into_inner() // retrieve the message
-                    } else {
-                        return Err(ServerError::TrySendError(to));
-                    }
-                }
-            }
-        } else {
-            msg
-        };
-        self.backlog.entry(to.clone()).or_default().push_back(msg);
         if disconnected {
             // if they disconnect, remove the sending channel
-            self.open_senders.remove(&to);
+            self.deregister(&to);
         }
         Ok(false)
+    }
+}
+
+impl From<MessageDAOError> for ServerError {
+    fn from(value: MessageDAOError) -> Self {
+        ServerError::DAOError(value)
     }
 }
 
@@ -301,11 +384,11 @@ mod test {
     use crate::identity::make_user_id;
     use crate::message_server;
     use crate::packet::{Destination, Packet, SPacket};
+    use crate::storage::memory_storage::MemoryMessageDatabase;
     use rocket::futures::StreamExt;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use uuid::Uuid;
-    use crate::storage::memory_storage::MemoryMessageDatabase;
 
     // stolen from https://github.com/rust-lang/book/blob/main/packages/trpl/src/lib.rs
     pub fn run<F: Future>(future: F) -> F::Output {

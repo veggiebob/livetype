@@ -35,6 +35,7 @@ pub enum Packet {
         #[serde(with = "uuid::serde::compact")]
         uuid: Uuid,
         content: String,
+        editing_draft: bool,
     },
 }
 */
@@ -66,6 +67,7 @@ interface Packet {
   StartDraft?: null,
   NewDraft?: {
     uuid: Uuid,
+    start_time: Timestamp
   },
   EndDraft?: {
     uuid: Uuid,
@@ -76,7 +78,8 @@ interface Packet {
   }
   Edit?: {
     uuid: Uuid,
-    content: string
+    content: string,
+    editing_draft: boolean,
   }
 }
 

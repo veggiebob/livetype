@@ -42,6 +42,8 @@ pub enum Packet {
     NewDraft {
         #[serde(with = "uuid::serde::compact")]
         uuid: MessageId,
+        // for catch-up, in case they missed the draft being started
+        start_time: Timestamp
     },
     EndDraft {
         #[serde(with = "uuid::serde::compact")]
@@ -56,6 +58,7 @@ pub enum Packet {
         #[serde(with = "uuid::serde::compact")]
         uuid: MessageId,
         content: String,
+        editing_draft: bool
     },
 }
 

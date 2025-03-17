@@ -7,7 +7,7 @@ use crate::identity::{GroupChatId, UserId, UserPair};
 use crate::packet::Destination;
 use crate::protocol::{Message, MessageId, Timestamp};
 use crate::storage;
-use crate::storage::{MessageFilter, MessageRoomDAO, MessagesDAO, RoomId};
+use crate::storage::{MessageDAOError, MessageFilter, MessageRoomDAO, MessagesDAO, RoomId};
 use crate::storage::Result;
 
 /// Contains messages in a room. Either a dm or a group chat.
@@ -38,13 +38,17 @@ impl MessageRoomDAO for MemoryMessageRoom {
         todo!()
     }
 
-    fn edit_message(&mut self, m_id: MessageId, new_content: String) -> storage::Result<()> {
-        todo!()
+    fn add_message(&mut self, message: Message) -> storage::Result<()> {
+        self.messages.insert(message.id, message);
+        Ok(())
     }
 
-    fn add_message(&mut self, message: Message) -> storage::Result<()> {
-        self.messages.insert(message.id.clone(), message);
-        Ok(())
+    fn get_message_mut(&mut self, m_id: MessageId) -> Option<&mut Message> {
+        self.messages.get_mut(&m_id)
+    }
+
+    fn get_message(&self, m_id: MessageId) -> Option<&Message> {
+        self.messages.get(&m_id)
     }
 }
 
@@ -64,8 +68,12 @@ impl MessagesDAO for MemoryMessageDatabase {
             Destination::User(userid) => {
                 let sender = message.sender.clone();
                 match self.direct_messages.entry((message.sender.clone(), userid.clone())) {
-                    Entry::Occupied(mut entry) => entry.get_mut().add_message(message)?,
+                    Entry::Occupied(mut entry) => {
+                        info!("adding message to storage using existing room");
+                        entry.get_mut().add_message(message)?
+                    },
                     Entry::Vacant(entry) => {
+                        info!("creating new message room with {:?} and {:?}", &sender, &userid);
                         entry.insert(MemoryMessageRoom::new(
                             vec![sender, userid].into_iter(),
                             true,
@@ -78,10 +86,21 @@ impl MessagesDAO for MemoryMessageDatabase {
     }
 
     fn get_room(&self, room_id: &RoomId) -> Result<&MemoryMessageRoom> {
-        todo!()
+        info!("Current dms: {:?}", self.direct_messages.keys());
+        match room_id {
+            RoomId::DM(userpair) => self.direct_messages.get(userpair)
+                .ok_or(MessageDAOError::MissingRoomId(room_id.clone())),
+            RoomId::Group(gc_id) => self.group_messages.get(gc_id)
+                .ok_or(MessageDAOError::MissingRoomId(room_id.clone()))
+        }
     }
 
-    fn get_room_mut(&self, room_id: &RoomId) -> Result<&mut MemoryMessageRoom> {
-        todo!()
+    fn get_room_mut(&mut self, room_id: &RoomId) -> Result<&mut MemoryMessageRoom> {
+        match room_id {
+            RoomId::DM(userpair) => self.direct_messages.get_mut(userpair)
+                .ok_or(MessageDAOError::MissingRoomId(room_id.clone())),
+            RoomId::Group(gc_id) => self.group_messages.get_mut(gc_id)
+                .ok_or(MessageDAOError::MissingRoomId(room_id.clone()))
+        }
     }
 }

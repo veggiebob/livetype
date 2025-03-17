@@ -15,7 +15,7 @@ interface State {
   username: string,
   messages: Message[],
   currentDraft: Draft,
-  workingDraft: boolean,
+  drafting: boolean,
   senderDrafts: Map<UserId, Draft>,
 }
 
@@ -33,7 +33,7 @@ const initialState: State = {
     start_time: undefined,
     end_time: undefined
   },
-  workingDraft: false,
+  drafting: false,
   senderDrafts: new Map<UserId, Draft>(),
 }
 
@@ -44,7 +44,7 @@ const ACTIONS = {
   UPDATE_SENDER_DRAFTS: 'UPDATE_SENDER_DRAFTS',
   UPDATE_MESSAGE: 'UPDATE_MESSAGE',
   END_DRAFT: 'END_DRAFT',
-  UPDATE_WORKING_DRAFT: 'UPDATE_WORKING_DRAFT',
+  UPDATE_DRAFTING: 'UPDATE_WORKING_DRAFT',
   SEND_DRAFT: 'SEND_DRAFT',
   RESET: 'RESET',
 }
@@ -68,10 +68,10 @@ const Login: React.FC = () => {
     }
     console.log('dispatching action', action, 'with payload ', payload);
     switch (action.type) {
-      case ACTIONS.UPDATE_WORKING_DRAFT:
+      case ACTIONS.UPDATE_DRAFTING:
         return {
           ...state,
-          workingDraft: payload
+          drafting: payload
         };
       case ACTIONS.UPDATE_USERNAME:
         return {
@@ -132,7 +132,7 @@ const Login: React.FC = () => {
               start_time: present(state.currentDraft.start_time),
               end_time: present(packet.timestamp),
             }],
-            workingDraft: false
+            drafting: false
           }
         } else {
           let senderDrafts = new Map(state.senderDrafts);
@@ -201,7 +201,7 @@ const Login: React.FC = () => {
           payload: (state: State) => ({
             uuid: uuid2str(present(packet.NewDraft?.uuid)),
             content: state.currentDraft?.content,
-            start_time: present(wpacket.timestamp),
+            start_time: present(packet.NewDraft?.start_time),
             end_time: undefined,
           })
         });
@@ -221,31 +221,60 @@ const Login: React.FC = () => {
           }
         });
       }
-    } else if (packet.Edit) {
-      // works on any message with the correct uuid
-      console.log('receieved edit', packet.Edit);
-      let uuid = uuid2str(present(packet.Edit?.uuid));
-      let content = present(packet.Edit?.content);
-      dispatch({
-        type: ACTIONS.UPDATE_MESSAGE,
-        payload: { uuid, content }
-      });
+    } else if (packet.DiscardDraft) {
+      console.log("Received a DiscardDraft packet", packet.DiscardDraft);
+      let uuid = uuid2str(present(packet.DiscardDraft?.uuid));
       dispatch({
         type: ACTIONS.UPDATE_SENDER_DRAFTS,
         payload: (state: State) => {
           let senderDrafts = new Map(state.senderDrafts);
           for (let [sender, draft] of [...senderDrafts.entries()]) {
             if (draft.uuid === uuid) {
-              senderDrafts.set(sender, {
-                ...draft,
-                content
-              });
+              senderDrafts.delete(sender);
               break;
             }
           }
           return senderDrafts;
         }
       });
+    } else if (packet.Edit) {
+      // works on any message with the correct uuid
+      console.log('receieved edit', packet.Edit);
+      let uuid = uuid2str(present(packet.Edit?.uuid));
+      let content = present(packet.Edit?.content);
+      if (packet.Edit?.editing_draft) {
+        dispatch({
+          type: ACTIONS.UPDATE_SENDER_DRAFTS,
+          payload: (state: State) => {
+            let senderDrafts = new Map(state.senderDrafts);
+            let editedDraft = false;
+            for (let [sender, draft] of [...senderDrafts.entries()]) {
+              if (draft.uuid === uuid) {
+                senderDrafts.set(sender, {
+                  ...draft,
+                  content
+                });
+                editedDraft = true;
+                break;
+              }
+            }
+            if (!editedDraft) {
+              senderDrafts.set(assertUserId(wpacket.sender), {
+                uuid: uuid,
+                content: content,
+                start_time: present(wpacket.timestamp),
+                end_time: undefined,
+              });
+            }
+            return senderDrafts;
+          }
+        });
+      } else {
+        dispatch({
+          type: ACTIONS.UPDATE_MESSAGE,
+          payload: { uuid, content }
+        });
+      }
     } else if (packet.EndDraft) {
       console.log("received end draft", packet.EndDraft);
       dispatch({
@@ -257,12 +286,6 @@ const Login: React.FC = () => {
       })
     }
   }
-
-  const handleLogin = () => {
-    if (username) {
-      setSubmitted(true);
-    }
-  };
 
   useEffect(() => {
     if (submitted && !isConnected && (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED)) {
@@ -314,17 +337,20 @@ const Login: React.FC = () => {
 
   useEffect(() => {
     if (!state.username) {
+      console.log("username is empty!!!")
       return;
     }
-    if (state.workingDraft) {
+    if (state.drafting) {
       if (state.currentDraft.uuid) {
+        console.log("updating own draft");
         // edit this draft
         const packet: WebPacket = {
           destination: { User: getRecipient() },
           content: {
             Edit: {
               uuid: str2uuid(present(state.currentDraft.uuid)),
-              content: inputContent
+              content: inputContent,
+              editing_draft: true,
             }
           }
         }
@@ -337,7 +363,8 @@ const Login: React.FC = () => {
         });
       }
     } else {
-      dispatch({type: ACTIONS.UPDATE_WORKING_DRAFT, payload: true});
+      console.log('starting own draft');
+      dispatch({type: ACTIONS.UPDATE_DRAFTING, payload: true});
       
       // start a draft
       const packet: WebPacket = {
@@ -406,7 +433,7 @@ const Login: React.FC = () => {
             value={username}
             onChange={(e) => setUsername(e.target.value)}
           />
-          <button onClick={handleLogin}>Submit</button>
+          <button onClick={() => {if (username) { setSubmitted(true); }}}>Submit</button>
         </div>
       )}
     </div>
