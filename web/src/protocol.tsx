@@ -27,6 +27,10 @@ pub enum Packet {
         uuid: Uuid,
         content: String,
     },
+    DiscardDraft {
+        #[serde(with = "uuid::serde::compact")]
+        uuid: MessageId
+    },
     Edit {
         #[serde(with = "uuid::serde::compact")]
         uuid: Uuid,
@@ -67,6 +71,9 @@ interface Packet {
     uuid: Uuid,
     content: string,
   },
+  DiscardDraft?: {
+    uuid: Uuid
+  }
   Edit?: {
     uuid: Uuid,
     content: string
@@ -110,6 +117,7 @@ const assertUserId = (userId: UserId | null | undefined): UserId => {
 // convert to base64 and back 
 const uuid2str = (arr: Array<number>): Base64Uuid => btoa(String.fromCharCode(...arr));
 const str2uuid = (str: Base64Uuid): Uuid => Array.from(atob(str).split('').map(c => c.charCodeAt(0)));
+const getNowTimestamp = (): Timestamp => Date.now() * 1000; // microseconds
 
 export type { Base64Uuid, Uuid, Timestamp, UserId, WebPacket, WebDest, Packet, Message, Draft };
-export { assertUuid, assertUserId, uuid2str, str2uuid };
+export { assertUuid, assertUserId, uuid2str, str2uuid, getNowTimestamp };

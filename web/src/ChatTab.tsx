@@ -1,5 +1,5 @@
 import React from 'react';
-import { UserId, Message, Draft } from './protocol';
+import { UserId, Message, Draft, getNowTimestamp } from './protocol';
 import './ChatTab.css';
 import DraftMessage from './DraftMessage';
 
@@ -53,7 +53,19 @@ function mergeThreads(threads: RenderMessage[][]): RenderMessage[] {
   return bigThread;
 }
 
-const ChatTab: React.FC<ChatTabProps> = ({ sender, messages, username, draft }) => {
+const ChatTab: React.FC<ChatTabProps> = ({ sender, messages: propmessages, username, draft }) => {
+  const now = getNowTimestamp();
+  const messages: Message[] = draft ? 
+    [...propmessages, 
+      {
+        sender,
+        destination: {User: sender}, 
+        content: draft?.content || "",
+        uuid: draft?.uuid || "<<<DRAFT>>>",
+        start_time: draft?.start_time || now, 
+        end_time: now
+      }]
+    : propmessages;
   // create a list of time stamps that correspond to the index of the message, and whether it's a start or end time
   let time_events: TimeEvent[] = [];
   messages.map((message, index) => {

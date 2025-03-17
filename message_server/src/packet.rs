@@ -1,13 +1,10 @@
 use std::time::SystemTime;
-use crate::identity::{UserId, make_user_id};
+use crate::identity::{make_user_id, UserId};
 use rocket_ws::Message;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use uuid;
-
-/// Unix microseconds. See get_current_time()
-type Timestamp = u64;
-
+use crate::protocol::{MessageId, Timestamp};
 // ------------------------- Web Packets -----------------------------
 
 /// This is what is sent on the websocket
@@ -35,6 +32,8 @@ pub enum Packet {
         #[serde(with = "uuid::serde::compact")]
         uuid: Uuid,
         content: String,
+        start_time: Timestamp,
+        end_time: Timestamp
     },
     // SyncMessage(Uuid, String), // to be used to sync database w/ chats
     /// A user only has one draft at a time in a conversation - the last thing they typed
@@ -42,16 +41,20 @@ pub enum Packet {
     /// Sent back to the sender after starting a new draft
     NewDraft {
         #[serde(with = "uuid::serde::compact")]
-        uuid: Uuid,
+        uuid: MessageId,
     },
     EndDraft {
         #[serde(with = "uuid::serde::compact")]
-        uuid: Uuid,
+        uuid: MessageId,
         content: Option<String>, // just to sync easier
+    },
+    DiscardDraft {
+        #[serde(with = "uuid::serde::compact")]
+        uuid: MessageId
     },
     Edit {
         #[serde(with = "uuid::serde::compact")]
-        uuid: Uuid,
+        uuid: MessageId,
         content: String,
     },
 }
@@ -68,7 +71,7 @@ pub struct SPacket {
 }
 
 /// Determines how to route server packet
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(Hash, PartialEq, Eq, Debug, Clone)]
 pub enum Destination {
     User(UserId),
     // Group(...?) // future use

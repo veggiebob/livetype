@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate rocket;
 
-use crate::packet::{SPacket, make_server_packet, make_webpacket};
+use crate::packet::{make_server_packet, make_webpacket, SPacket};
 use identity::make_user_id;
 use log::{error, info, warn};
 use packet::WebPacket;
@@ -9,19 +9,20 @@ use rocket::futures::channel::mpsc::UnboundedReceiver;
 use rocket::futures::{SinkExt, StreamExt};
 use rocket::response::status;
 use rocket::tokio::select;
-use rocket::{State, tokio};
+use rocket::{tokio, State};
 use rocket_ws::stream::DuplexStream;
 use rocket_ws::{Channel, Message, WebSocket};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, mpsc};
-use crate::message_server::SPacketAnnotator;
+use std::sync::{mpsc, Arc, Mutex};
+use crate::storage::memory_storage::MemoryMessageDatabase;
 
 mod identity;
 pub mod message_server;
 pub mod packet;
 mod storage;
+mod protocol;
 
-type MessageServer = State<Arc<Mutex<message_server::MessageServer<SPacket, message_server::SPacketAnnotator>>>>;
+type MessageServer = State<Arc<Mutex<message_server::MessageServer<MemoryMessageDatabase>>>>;
 
 #[derive(Clone)]
 struct ServerSender(mpsc::Sender<SPacket>);
@@ -107,7 +108,7 @@ async fn handle_socket(
 
 #[launch]
 fn rocket() -> _ {
-    let (s_sender, server, shutdown_server) = message_server::MessageServer::start(SPacketAnnotator);
+    let (s_sender, server, shutdown_server) = message_server::MessageServer::start(MemoryMessageDatabase::new());
     rocket::build()
         .attach(shutdown_server)
         .manage(ServerSender(s_sender))
