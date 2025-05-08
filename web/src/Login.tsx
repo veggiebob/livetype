@@ -404,12 +404,12 @@ const Login: React.FC = () => {
   return (
     <div>
       {isConnected ? (<div>
-        <p> Connected! </p>
+        <p> 🟢 </p>
         Message room for {username}
         <br />
         <div>
-          <Messages messages={state.messages} username={state.username} drafts={state.senderDrafts} />
           Send to: <input type="text" id='send_to' ref={sendFieldRef}/>
+          <Messages messages={state.messages} username={state.username} drafts={state.senderDrafts} />
           Message: <input type="text" id='message_content' ref={inputRef} onInput={() => { handleTypedDraft(getTextboxContent()); }} />
           <button onClick={
             () => {
@@ -425,6 +425,7 @@ const Login: React.FC = () => {
       </div>
       ) : (
         <div>
+          <p> 🔴 </p>
           <h2>Login</h2>
           {triedLogin ? <p>⚠️ Failed to connect. Retry </p> : null}
           <input
